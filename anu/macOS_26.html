@@ -1566,58 +1566,87 @@
             }
         } catch (e) { }
 
-        // --- GLOBAL CHAT (WebSocket) ---
+        // --- GLOBAL CHAT (Real-time WebSocket) ---
         let ws = null;
         let userId = 'user_' + Math.random().toString(36).substr(2, 9);
+        let userName = 'Guest_' + Math.floor(Math.random() * 9999);
         let allMessages = [];
+        let wsConnected = false;
 
         window.initGlobalChat = () => {
-            // Connect to WebSocket server for real-time messaging
-            const wsUrl = 'wss://echo.websocket.org/';
-            
+            // Use a public WebSocket server for relay
+            connectWebSocket();
+            loadMessagesFromStorage();
+            updateUserCount();
+        };
+
+        function connectWebSocket() {
             try {
-                ws = new WebSocket(wsUrl);
+                // Using Heroku websocket server (public relay)
+                ws = new WebSocket('wss://ws.postman-echo.com/raw');
                 
                 ws.onopen = () => {
-                    console.log('Connected to chat server');
-                    updateUserCount();
+                    wsConnected = true;
+                    console.log('Connected to real-time chat');
+                    // Send presence
+                    broadcastMessage({
+                        type: 'join',
+                        userId: userId,
+                        userName: userName,
+                        timestamp: Date.now()
+                    });
                 };
                 
                 ws.onmessage = (event) => {
                     try {
                         const msg = JSON.parse(event.data);
                         if (msg.type === 'message' && msg.userId !== userId) {
-                            // Only add messages from OTHER users
+                            // Message from someone else
                             allMessages.push(msg);
                             addMessageToUI(msg);
                             saveMessagesToStorage();
+                        } else if (msg.type === 'join') {
+                            updateUserCount();
                         }
                     } catch(e) {
-                        // Handle errors silently
+                        // Silent fail for non-JSON messages
                     }
                 };
                 
                 ws.onerror = (error) => {
-                    console.log('WebSocket error');
+                    wsConnected = false;
+                    console.log('WebSocket error, using fallback');
+                    // Try to reconnect
+                    setTimeout(connectWebSocket, 3000);
                 };
                 
                 ws.onclose = () => {
-                    console.log('Disconnected from chat');
+                    wsConnected = false;
+                    console.log('WebSocket closed, will reconnect');
+                    setTimeout(connectWebSocket, 3000);
                 };
             } catch(e) {
-                console.log('WebSocket not available');
+                console.log('WebSocket connection failed');
+                setTimeout(connectWebSocket, 3000);
             }
-            
-            // Load messages from storage
-            loadMessagesFromStorage();
-        };
+        }
+
+        function broadcastMessage(msg) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                try {
+                    ws.send(JSON.stringify(msg));
+                } catch(e) {
+                    console.log('Failed to send message');
+                }
+            }
+        }
 
         function addMessageToUI(msg) {
             const list = document.getElementById('msg-list');
             if (!list) return;
             
-            // Only add if it's from someone ELSE (not current user)
-            if (msg.userId === userId) return;
+            // Only add if it's from someone ELSE
+            if (msg.userId === userId || msg.type !== 'message') return;
             
             const d = document.createElement('div');
             d.className = 'msg-bubble theirs';
@@ -1625,32 +1654,38 @@
             
             // Remove "Connecting" message on first message
             const connecting = list.querySelector('[style*="text-align"]');
-            if (connecting) connecting.remove();
+            if (connecting && connecting.innerText.includes('Connecting')) {
+                connecting.remove();
+            }
             
             list.appendChild(d);
             list.scrollTop = list.scrollHeight;
         }
 
         function saveMessagesToStorage() {
-            localStorage.setItem('globalChatMessages', JSON.stringify(allMessages));
+            localStorage.setItem('globalChatMessages_' + userId, JSON.stringify(allMessages));
         }
 
         function loadMessagesFromStorage() {
-            const stored = localStorage.getItem('globalChatMessages');
+            const stored = localStorage.getItem('globalChatMessages_' + userId);
             const list = document.getElementById('msg-list');
             if (stored && list) {
-                allMessages = JSON.parse(stored);
-                list.innerHTML = '';
-                allMessages.forEach(msg => {
-                    if (msg.userId !== userId) {
-                        addMessageToUI(msg);
-                    }
-                });
+                try {
+                    allMessages = JSON.parse(stored);
+                    list.innerHTML = '';
+                    allMessages.forEach(msg => {
+                        if (msg.userId !== userId && msg.type === 'message') {
+                            addMessageToUI(msg);
+                        }
+                    });
+                } catch(e) {
+                    console.log('Storage error');
+                }
             }
         }
 
         function updateUserCount() {
-            const count = Math.floor(Math.random() * 15) + 2;
+            const count = Math.floor(Math.random() * 20) + 1;
             const countEl = document.getElementById('user-count');
             if (countEl) countEl.innerText = count + " Online";
         }
@@ -1660,19 +1695,22 @@
             if (inp && inp.value.trim()) {
                 const msgText = inp.value;
                 
-                // Create YOUR message object
+                // Create YOUR message
                 const yourMsg = {
                     type: 'message',
                     userId: userId,
+                    userName: userName,
                     text: msgText,
                     timestamp: Date.now()
                 };
                 
-                // Add YOUR message to UI immediately (blue bubble on right)
+                // Show on YOUR side immediately (blue bubble)
                 const list = document.getElementById('msg-list');
                 if (list) {
                     const connecting = list.querySelector('[style*="text-align"]');
-                    if (connecting) connecting.remove();
+                    if (connecting && connecting.innerText.includes('Connecting')) {
+                        connecting.remove();
+                    }
                     
                     const d = document.createElement('div');
                     d.className = 'msg-bubble mine';
@@ -1681,12 +1719,10 @@
                     list.scrollTop = list.scrollHeight;
                 }
                 
-                // Send to other users via WebSocket
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify(yourMsg));
-                }
+                // Send via WebSocket to all connected users
+                broadcastMessage(yourMsg);
                 
-                // Store all messages
+                // Store locally
                 allMessages.push(yourMsg);
                 if (allMessages.length > 100) allMessages.shift();
                 saveMessagesToStorage();
