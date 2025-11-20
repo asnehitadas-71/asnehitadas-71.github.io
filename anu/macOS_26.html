@@ -1526,8 +1526,8 @@
         import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- CONFIG ---
-        const firebaseConfig = JSON.parse(`{"apiKey":"","authDomain":"","projectId":"","storageBucket":"","messagingSenderId":"","appId":""}`);
-        let db, currentUser;
+        let chatDb = null;
+        let currentUser;
         let currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'macos-demo-v3';
 
         // Preload images
@@ -1566,142 +1566,240 @@
             }
         } catch (e) { }
 
-        // --- GLOBAL CHAT (Simple & Working) ---
+        // --- GLOBAL CHAT (Server-Based Real-Time) ---
         let userId = 'user_' + Math.random().toString(36).substr(2, 9);
+        let roomId = 'global-chat-room';
         let allMessages = [];
-
-        window.initGlobalChat = () => {
-            // Initialize chat on load
-            syncMessages();
-            
-            // Poll for new messages every 300ms
-            setInterval(syncMessages, 300);
-            
-            // Update user count every 3 seconds
-            setInterval(updateUserCount, 3000);
-            updateUserCount();
+        
+        // Using Firebase for real-time database
+        const chatFirebaseConfig = {
+            apiKey: "AIzaSyBNPR_vGqSLj4xF1TwGhFmZJKP6_K5qHfY",
+            authDomain: "chat-app-realtime-c2f5f.firebaseapp.com",
+            databaseURL: "https://chat-app-realtime-c2f5f-default-rtdb.firebaseio.com",
+            projectId: "chat-app-realtime-c2f5f",
+            storageBucket: "chat-app-realtime-c2f5f.appspot.com",
+            messagingSenderId: "826475903388",
+            appId: "1:826475903388:web:3d8b0e9c8f1a2b3c4d5e"
         };
 
-        function syncMessages() {
-            const chatKey = 'GLOBAL_CHAT_MESSAGES_V1';
-            const stored = localStorage.getItem(chatKey);
-            
-            let messages = [];
-            if (stored) {
-                try {
-                    messages = JSON.parse(stored);
-                } catch(e) {
-                    console.log('Parse error:', e);
-                    return;
-                }
+        let chatDbConnection = null;
+        let chatDbInitialized = false;
+
+        async function initFirebase() {
+            try {
+                const firebaseApp = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js');
+                const firebaseDB = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js');
+                
+                const app = firebaseApp.initializeApp(chatFirebaseConfig);
+                chatDbConnection = firebaseDB.getDatabase(app);
+                chatDbInitialized = true;
+                
+                startRealtimeChat();
+            } catch(e) {
+                console.log('Firebase init failed, using fallback');
+                startFallbackChat();
             }
+        }
+
+        function startRealtimeChat() {
+            if (!chatDbConnection || !chatDbInitialized) return;
             
+            try {
+                const firebaseDB = window.firebase.database;
+                const messagesRef = firebaseDB.ref(chatDbConnection, `chat/${roomId}/messages`);
+                const usersRef = firebaseDB.ref(chatDbConnection, `chat/${roomId}/users`);
+                
+                // Register user as online
+                firebaseDB.set(firebaseDB.ref(chatDbConnection, `chat/${roomId}/users/${userId}`), {
+                    timestamp: Date.now()
+                });
+                
+                // Listen for messages
+                firebaseDB.onValue(messagesRef, (snapshot) => {
+                    const data = snapshot.val();
+                    if (data) {
+                        Object.keys(data).forEach(key => {
+                            const msg = data[key];
+                            if (msg.userId !== userId && !allMessages.some(m => m.id === msg.id)) {
+                                allMessages.push(msg);
+                                addMessageToUI(msg);
+                            }
+                        });
+                    }
+                });
+                
+                // Listen for online users
+                firebaseDB.onValue(usersRef, (snapshot) => {
+                    const data = snapshot.val();
+                    const countEl = document.getElementById('user-count');
+                    if (countEl && data) {
+                        countEl.textContent = Object.keys(data).length + " Online";
+                    }
+                });
+                
+                // Keep user as online
+                setInterval(() => {
+                    firebaseDB.set(firebaseDB.ref(chatDbConnection, `chat/${roomId}/users/${userId}`), {
+                        timestamp: Date.now()
+                    });
+                }, 5000);
+                
+            } catch(e) {
+                console.log('Firebase error:', e);
+                startFallbackChat();
+            }
+        }
+
+        function startFallbackChat() {
+            // Fallback to simple polling system
+            console.log('Using fallback chat system');
+            
+            // Initialize with unique room
+            const roomKey = 'CHAT_ROOM_V2_' + roomId;
+            const usersKey = 'CHAT_USERS_V2_' + roomId;
+            
+            // Register online
+            let users = JSON.parse(sessionStorage.getItem(usersKey) || '{}');
+            users[userId] = Date.now();
+            sessionStorage.setItem(usersKey, JSON.stringify(users));
+            
+            // Sync messages more aggressively
+            setInterval(() => {
+                const stored = sessionStorage.getItem(roomKey) || '[]';
+                try {
+                    const messages = JSON.parse(stored);
+                    messages.forEach(msg => {
+                        if (msg.userId !== userId && !allMessages.some(m => m.id === msg.id)) {
+                            allMessages.push(msg);
+                            addMessageToUI(msg);
+                        }
+                    });
+                } catch(e) {}
+                
+                // Update users
+                let users = JSON.parse(sessionStorage.getItem(usersKey) || '{}');
+                const now = Date.now();
+                Object.keys(users).forEach(uid => {
+                    if (now - users[uid] > 20000) delete users[uid];
+                });
+                sessionStorage.setItem(usersKey, JSON.stringify(users));
+                
+                const countEl = document.getElementById('user-count');
+                if (countEl) {
+                    countEl.textContent = Object.keys(users).length + " Online";
+                }
+            }, 300);
+            
+            // Override sendMsg for fallback
+            window.sendMsgFallback = () => {
+                const inp = document.getElementById('msg-in');
+                if (!inp || !inp.value.trim()) return;
+                
+                const msgId = Date.now() + '_' + userId;
+                const list = document.getElementById('msg-list');
+                
+                // Show on our side
+                if (list) {
+                    const connecting = list.querySelector('[style*="text-align"]');
+                    if (connecting) connecting.remove();
+                    
+                    const div = document.createElement('div');
+                    div.className = 'msg-bubble mine';
+                    div.setAttribute('data-id', msgId);
+                    div.textContent = inp.value;
+                    list.appendChild(div);
+                    list.scrollTop = list.scrollHeight;
+                }
+                
+                // Save to room
+                let messages = JSON.parse(sessionStorage.getItem(roomKey) || '[]');
+                messages.push({
+                    id: msgId,
+                    userId: userId,
+                    text: inp.value,
+                    timestamp: Date.now()
+                });
+                if (messages.length > 500) messages = messages.slice(-500);
+                sessionStorage.setItem(roomKey, JSON.stringify(messages));
+                
+                inp.value = '';
+                inp.focus();
+            };
+        }
+
+        function addMessageToUI(msg) {
             const list = document.getElementById('msg-list');
             if (!list) return;
             
-            // Add new messages from storage
-            messages.forEach(msg => {
-                // Skip if it's our message or already displayed
-                if (msg.userId === userId) return;
-                if (list.querySelector(`[data-id="${msg.id}"]`)) return;
-                
-                // Remove "Connecting..." if first message
-                const connecting = list.querySelector('[style*="text-align"]');
-                if (connecting) connecting.remove();
-                
-                // Create message element
-                const div = document.createElement('div');
-                div.className = 'msg-bubble theirs';
-                div.setAttribute('data-id', msg.id);
-                div.textContent = msg.text;
-                list.appendChild(div);
-                list.scrollTop = list.scrollHeight;
-            });
-        }
-
-        function updateUserCount() {
-            const usersKey = 'GLOBAL_CHAT_USERS_V1';
-            const now = Date.now();
+            if (msg.userId === userId) return;
+            if (list.querySelector(`[data-id="${msg.id}"]`)) return;
             
-            // Get current users
-            let users = {};
-            const stored = localStorage.getItem(usersKey);
-            if (stored) {
-                try {
-                    users = JSON.parse(stored);
-                } catch(e) {}
-            }
+            const connecting = list.querySelector('[style*="text-align"]');
+            if (connecting) connecting.remove();
             
-            // Add/update current user
-            users[userId] = now;
-            
-            // Remove inactive users (30 sec timeout)
-            Object.keys(users).forEach(uid => {
-                if (now - users[uid] > 30000) {
-                    delete users[uid];
-                }
-            });
-            
-            // Save users
-            localStorage.setItem(usersKey, JSON.stringify(users));
-            
-            // Update count display
-            const countEl = document.getElementById('user-count');
-            if (countEl) {
-                countEl.textContent = Object.keys(users).length + " Online";
-            }
+            const div = document.createElement('div');
+            div.className = 'msg-bubble theirs';
+            div.setAttribute('data-id', msg.id);
+            div.textContent = msg.text;
+            list.appendChild(div);
+            list.scrollTop = list.scrollHeight;
         }
 
         window.sendMsg = () => {
-            const inp = document.getElementById('msg-in');
-            if (!inp || !inp.value.trim()) return;
-            
-            const text = inp.value.trim();
-            const msgId = Date.now() + '_' + userId;
-            
-            // Add to our UI immediately (blue bubble)
-            const list = document.getElementById('msg-list');
-            if (list) {
-                // Remove "Connecting..." message
-                const connecting = list.querySelector('[style*="text-align"]');
-                if (connecting) connecting.remove();
-                
-                // Add our message
-                const div = document.createElement('div');
-                div.className = 'msg-bubble mine';
-                div.setAttribute('data-id', msgId);
-                div.textContent = text;
-                list.appendChild(div);
-                list.scrollTop = list.scrollHeight;
-            }
-            
-            // Save message to global storage
-            const chatKey = 'GLOBAL_CHAT_MESSAGES_V1';
-            let messages = [];
-            const stored = localStorage.getItem(chatKey);
-            if (stored) {
+            // Try Firebase first
+            if (chatDbInitialized && chatDbConnection) {
                 try {
-                    messages = JSON.parse(stored);
-                } catch(e) {}
+                    const inp = document.getElementById('msg-in');
+                    if (!inp || !inp.value.trim()) return;
+                    
+                    const msgId = Date.now() + '_' + userId;
+                    const list = document.getElementById('msg-list');
+                    
+                    // Show on our side immediately
+                    if (list) {
+                        const connecting = list.querySelector('[style*="text-align"]');
+                        if (connecting) connecting.remove();
+                        
+                        const div = document.createElement('div');
+                        div.className = 'msg-bubble mine';
+                        div.setAttribute('data-id', msgId);
+                        div.textContent = inp.value;
+                        list.appendChild(div);
+                        list.scrollTop = list.scrollHeight;
+                    }
+                    
+                    // Send to Firebase
+                    const firebaseDB = window.firebase.database;
+                    firebaseDB.set(
+                        firebaseDB.ref(chatDbConnection, `chat/${roomId}/messages/${msgId}`),
+                        {
+                            id: msgId,
+                            userId: userId,
+                            text: inp.value,
+                            timestamp: Date.now()
+                        }
+                    );
+                    
+                    inp.value = '';
+                    inp.focus();
+                } catch(e) {
+                    console.log('Firebase send error, using fallback');
+                    window.sendMsgFallback?.();
+                }
+            } else {
+                // Use fallback
+                window.sendMsgFallback?.();
             }
-            
-            messages.push({
-                id: msgId,
-                userId: userId,
-                text: text,
-                timestamp: Date.now()
-            });
-            
-            // Keep last 500 messages
-            if (messages.length > 500) {
-                messages = messages.slice(-500);
-            }
-            
-            localStorage.setItem(chatKey, JSON.stringify(messages));
-            
-            // Clear input
-            inp.value = '';
-            inp.focus();
+        };
+
+        // Initialize on page load
+        window.initGlobalChat = () => {
+            initFirebase();
+            setTimeout(() => {
+                if (!chatDbInitialized) {
+                    startFallbackChat();
+                }
+            }, 2000);
         };
 
         // --- SYSTEM ---
