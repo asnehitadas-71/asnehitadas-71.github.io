@@ -1566,204 +1566,142 @@
             }
         } catch (e) { }
 
-        // --- GLOBAL CHAT (Real-time with Supabase) ---
+        // --- GLOBAL CHAT (Simple & Working) ---
         let userId = 'user_' + Math.random().toString(36).substr(2, 9);
-        let userName = 'Guest_' + Math.floor(Math.random() * 9999);
         let allMessages = [];
-        let messageListeners = [];
-
-        // Supabase config (create free account at supabase.com)
-        const SUPABASE_URL = 'https://your-project.supabase.co';
-        const SUPABASE_KEY = 'your-anon-key';
 
         window.initGlobalChat = () => {
-            // Try to use localStorage as fallback real-time system
-            setupLocalStorageRealtimeChat();
-            loadMessagesFromStorage();
+            // Initialize chat on load
+            syncMessages();
+            
+            // Poll for new messages every 300ms
+            setInterval(syncMessages, 300);
+            
+            // Update user count every 3 seconds
+            setInterval(updateUserCount, 3000);
             updateUserCount();
         };
 
-        function setupLocalStorageRealtimeChat() {
-            // Create a simple real-time system using localStorage and polling
-            const chatKey = 'globalChat_messages';
-            const usersKey = 'globalChat_users';
+        function syncMessages() {
+            const chatKey = 'GLOBAL_CHAT_MESSAGES_V1';
+            const stored = localStorage.getItem(chatKey);
             
-            // Register this user as online
-            const users = JSON.parse(localStorage.getItem(usersKey) || '{}');
-            users[userId] = {
-                name: userName,
-                lastSeen: Date.now()
-            };
-            localStorage.setItem(usersKey, JSON.stringify(users));
-            
-            // Poll for new messages every 500ms
-            setInterval(() => {
-                const stored = localStorage.getItem(chatKey) || '[]';
+            let messages = [];
+            if (stored) {
                 try {
-                    const messages = JSON.parse(stored);
-                    // Check for new messages
-                    messages.forEach(msg => {
-                        if (msg.userId !== userId && !allMessages.some(m => m.id === msg.id)) {
-                            allMessages.push(msg);
-                            addMessageToUI(msg);
-                        }
-                    });
-                    
-                    // Update user count
-                    updateUserCountFromStorage();
+                    messages = JSON.parse(stored);
                 } catch(e) {
-                    console.log('Storage sync error');
+                    console.log('Parse error:', e);
+                    return;
                 }
-            }, 500);
+            }
             
-            // Clean up old users periodically
-            setInterval(() => {
-                const users = JSON.parse(localStorage.getItem(usersKey) || '{}');
-                const now = Date.now();
-                Object.keys(users).forEach(uid => {
-                    if (now - users[uid].lastSeen > 30000) { // Remove if inactive for 30s
-                        delete users[uid];
-                    }
-                });
-                localStorage.setItem(usersKey, JSON.stringify(users));
-            }, 5000);
-        }
-
-        function addMessageToUI(msg) {
             const list = document.getElementById('msg-list');
             if (!list) return;
             
-            // Only add if it's from someone ELSE
-            if (msg.userId === userId || msg.type !== 'message') return;
-            
-            // Check if already added
-            if (list.querySelector(`[data-msg-id="${msg.id}"]`)) return;
-            
-            const d = document.createElement('div');
-            d.className = 'msg-bubble theirs';
-            d.setAttribute('data-msg-id', msg.id);
-            d.innerText = msg.text;
-            
-            // Remove "Connecting" message on first message
-            const connecting = list.querySelector('[style*="text-align"]');
-            if (connecting && connecting.innerText.includes('Connecting')) {
-                connecting.remove();
-            }
-            
-            list.appendChild(d);
-            list.scrollTop = list.scrollHeight;
-        }
-
-        function saveMessagesToStorage() {
-            const chatKey = 'globalChat_messages';
-            const stored = localStorage.getItem(chatKey) || '[]';
-            let messages = [];
-            try {
-                messages = JSON.parse(stored);
-            } catch(e) {
-                messages = [];
-            }
-            
-            // Merge new messages
-            allMessages.forEach(msg => {
-                if (!messages.some(m => m.id === msg.id)) {
-                    messages.push(msg);
-                }
+            // Add new messages from storage
+            messages.forEach(msg => {
+                // Skip if it's our message or already displayed
+                if (msg.userId === userId) return;
+                if (list.querySelector(`[data-id="${msg.id}"]`)) return;
+                
+                // Remove "Connecting..." if first message
+                const connecting = list.querySelector('[style*="text-align"]');
+                if (connecting) connecting.remove();
+                
+                // Create message element
+                const div = document.createElement('div');
+                div.className = 'msg-bubble theirs';
+                div.setAttribute('data-id', msg.id);
+                div.textContent = msg.text;
+                list.appendChild(div);
+                list.scrollTop = list.scrollHeight;
             });
-            
-            // Keep only last 200 messages
-            if (messages.length > 200) {
-                messages = messages.slice(-200);
-            }
-            
-            localStorage.setItem(chatKey, JSON.stringify(messages));
-        }
-
-        function loadMessagesFromStorage() {
-            const chatKey = 'globalChat_messages';
-            const stored = localStorage.getItem(chatKey);
-            const list = document.getElementById('msg-list');
-            if (stored && list) {
-                try {
-                    const messages = JSON.parse(stored);
-                    list.innerHTML = '';
-                    messages.forEach(msg => {
-                        if (msg.userId !== userId && msg.type === 'message') {
-                            allMessages.push(msg);
-                            addMessageToUI(msg);
-                        }
-                    });
-                } catch(e) {
-                    console.log('Storage load error');
-                }
-            }
-        }
-
-        function updateUserCountFromStorage() {
-            const usersKey = 'globalChat_users';
-            const users = JSON.parse(localStorage.getItem(usersKey) || '{}');
-            const countEl = document.getElementById('user-count');
-            if (countEl) {
-                countEl.innerText = Object.keys(users).length + " Online";
-            }
         }
 
         function updateUserCount() {
-            updateUserCountFromStorage();
-            // Also update our presence
-            const usersKey = 'globalChat_users';
-            const users = JSON.parse(localStorage.getItem(usersKey) || '{}');
-            users[userId] = {
-                name: userName,
-                lastSeen: Date.now()
-            };
+            const usersKey = 'GLOBAL_CHAT_USERS_V1';
+            const now = Date.now();
+            
+            // Get current users
+            let users = {};
+            const stored = localStorage.getItem(usersKey);
+            if (stored) {
+                try {
+                    users = JSON.parse(stored);
+                } catch(e) {}
+            }
+            
+            // Add/update current user
+            users[userId] = now;
+            
+            // Remove inactive users (30 sec timeout)
+            Object.keys(users).forEach(uid => {
+                if (now - users[uid] > 30000) {
+                    delete users[uid];
+                }
+            });
+            
+            // Save users
             localStorage.setItem(usersKey, JSON.stringify(users));
+            
+            // Update count display
+            const countEl = document.getElementById('user-count');
+            if (countEl) {
+                countEl.textContent = Object.keys(users).length + " Online";
+            }
         }
-
-        // Update presence every 5 seconds
-        setInterval(() => {
-            updateUserCount();
-        }, 5000);
 
         window.sendMsg = () => {
             const inp = document.getElementById('msg-in');
-            if (inp && inp.value.trim()) {
-                const msgText = inp.value;
-                const msgId = Date.now() + '_' + userId;
+            if (!inp || !inp.value.trim()) return;
+            
+            const text = inp.value.trim();
+            const msgId = Date.now() + '_' + userId;
+            
+            // Add to our UI immediately (blue bubble)
+            const list = document.getElementById('msg-list');
+            if (list) {
+                // Remove "Connecting..." message
+                const connecting = list.querySelector('[style*="text-align"]');
+                if (connecting) connecting.remove();
                 
-                // Create YOUR message
-                const yourMsg = {
-                    type: 'message',
-                    id: msgId,
-                    userId: userId,
-                    userName: userName,
-                    text: msgText,
-                    timestamp: Date.now()
-                };
-                
-                // Show on YOUR side immediately (blue bubble)
-                const list = document.getElementById('msg-list');
-                if (list) {
-                    const connecting = list.querySelector('[style*="text-align"]');
-                    if (connecting && connecting.innerText.includes('Connecting')) {
-                        connecting.remove();
-                    }
-                    
-                    const d = document.createElement('div');
-                    d.className = 'msg-bubble mine';
-                    d.setAttribute('data-msg-id', msgId);
-                    d.innerText = msgText;
-                    list.appendChild(d);
-                    list.scrollTop = list.scrollHeight;
-                }
-                
-                // Save to localStorage (syncs to all tabs/windows)
-                allMessages.push(yourMsg);
-                saveMessagesToStorage();
-                
-                inp.value = '';
-                inp.focus();
+                // Add our message
+                const div = document.createElement('div');
+                div.className = 'msg-bubble mine';
+                div.setAttribute('data-id', msgId);
+                div.textContent = text;
+                list.appendChild(div);
+                list.scrollTop = list.scrollHeight;
             }
+            
+            // Save message to global storage
+            const chatKey = 'GLOBAL_CHAT_MESSAGES_V1';
+            let messages = [];
+            const stored = localStorage.getItem(chatKey);
+            if (stored) {
+                try {
+                    messages = JSON.parse(stored);
+                } catch(e) {}
+            }
+            
+            messages.push({
+                id: msgId,
+                userId: userId,
+                text: text,
+                timestamp: Date.now()
+            });
+            
+            // Keep last 500 messages
+            if (messages.length > 500) {
+                messages = messages.slice(-500);
+            }
+            
+            localStorage.setItem(chatKey, JSON.stringify(messages));
+            
+            // Clear input
+            inp.value = '';
+            inp.focus();
         };
 
         // --- SYSTEM ---
